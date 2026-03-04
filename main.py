@@ -1,13 +1,15 @@
 from typing import List
 from fastapi import FastAPI, File, Form, UploadFile
 import asyncio
+from core.rag import find_similar_case
+from core.vision import extract_text_from_buffer
 from models.schemas import FraudResponse
 import chromadb
 from chromadb.utils import embedding_functions
 import io
 from PIL import Image
 import numpy as np
-
+import onnxruntime as ort
 
 app = FastAPI()
 concurrency_gate = asyncio.Semaphore(5)
@@ -48,21 +50,22 @@ async def analyze_images(
             img_bytes = await file.read()
             img_buffers.append(io.BytesIO(img_bytes))
             
+        # Vision 모듈 호출: 텍스트 추출
         extracted_texts = []
         for buffer in img_buffers:
-            buffer.seek(0)
-            original_img = Image.open(buffer).convert("RGB")
+            text = extract_text_from_buffer(buffer)
+            extracted_texts.append(text)
 
-            resized_img = original_img.resize((224, 224))
-            img_array = np.array(resized_img, dtype=np.float32)
+        # RAG 모듈 호출: 추출된 텍스트 병합 후 유사 판례 찾기
+        combined_text = " ".join(extracted_texts)
+        reference_case = find_similar_case(combined_text)
 
-            img_array /= 255.0
-            
+        # LLM 돌리기
 
-    # 결과 반환
-    return {
-        "status":"FRAUD",
-        "fraudScore":85.5,
-        "description":f"총 {len(files)}장의 {imageType} 데이터가 {scamType}유형으로 분석 완료되었습니다."
-    }
+        #결과 반환
+        return FraudResponse (
+            status="FRAUD",
+            fraudScore=85.5,
+            description=f"유사 사례 참조: {reference_case[:20]}" if reference_case else "분석 완료"
+        )
     
