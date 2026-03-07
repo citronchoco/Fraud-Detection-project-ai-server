@@ -24,13 +24,13 @@ def detect_manipulation_ela(buffer: io.BytesIO) -> dict:
     if max_diff == 0:
         max_diff = 1
     scale = 255.0 / max_diff
-    diff = ImageChops.multiply(diff, scale)
+    diff = diff.point(lambda p: p * scale)
     
     # 픽셀 차이의 평균값을 계산하여 조작 의심 점수 도출
     diff_np = np.array(diff)
     mean_error = float(np.mean(diff_np))
     
-    is_manipulated = mean_error > 15.0  # 임계값 (테스트하며 조정 필요)
+    is_manipulated = mean_error > 12.0  # 임계값 (테스트하며 조정 필요)
     
     return FraudResponse(
         status="SUSPICIOUS" if is_manipulated else "NORMAL",
