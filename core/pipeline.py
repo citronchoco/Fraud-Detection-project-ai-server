@@ -21,7 +21,7 @@ async def analyze_chat_logic(
     reference_case = find_similar_case(combined_text)
 
     # 3. OCR 오타 감안 및 문맥 중심 파악 지침 추가
-    prompt = f"""당신은 디지털 금융 범죄 분석 전문가입니다.
+    prompt = f"""당신은 대한민국의 디지털 금융 범죄 분석 전문가입니다.
       다음 채팅 내용과 공공 사기 판례를 비교하여 사기 여부를 판단하세요.
       
       [채팅 내용]
@@ -39,7 +39,7 @@ async def analyze_chat_logic(
       {{
         "status": "FRAUD 또는 NORMAL 또는 SUSPICIOUS",
         "fraudScore": 0.0에서 100.0 사이의 숫자,
-        "description": "분석 결과 요약 및 판단 근거 (유사 판례 일치 여부 포함)"
+        "description": "분석 결과 요약 및 판단 근거 (유사 판례 일치 여부 포함) (반드시 한국어로 작성할 것)"
       }}
       """
     # 4. AsyncClient를 사용한 비동기 논블로킹 호출
@@ -63,7 +63,7 @@ async def analyze_image_manipulation(
     highest_fraud_response = None
     max_score = -1.0
 
-    # 💡 피드백 반영: 여러 장의 이미지를 순회하며 가장 의심스러운(점수가 높은) 결과를 채택
+    # 여러 장의 이미지를 순회하며 가장 의심스러운(= 점수가 높은) 결과를 채택
     for buf in img_buffers:
         if scam_type == "investment" and image_type == "proof":
             current_response = detect_manipulation_ela(buf)

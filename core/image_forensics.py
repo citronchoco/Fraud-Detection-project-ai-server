@@ -38,7 +38,7 @@ def detect_manipulation_ela(buffer: io.BytesIO) -> dict:
         description=f"이미지 압축률 오류 분석(ELA) 결과, 평균 오차값 {mean_error:.1f}로 조작 흔적이 {'발견되었습니다.' if is_manipulated else '보이지 않습니다.'}"
     )
 
-def detect_deepfaㅔke_clip(buffer: io.BytesIO) -> dict:
+def detect_deepfake_clip(buffer: io.BytesIO) -> dict:
     """
     [romance scam] Lab3 수업 자료의 CLIP을 응용하여 AI 생성 프로필인지 Zero-shot 분류
     """
