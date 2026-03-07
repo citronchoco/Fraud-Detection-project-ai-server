@@ -1,127 +1,88 @@
 import io
 from typing import List
-
-import google.generativeai as genai
-from PIL import Image
+from ollama import AsyncClient
 
 from models.schemas import FraudResponse
 from core.rag import find_similar_case
 from core.vision import extract_text_from_buffer
+from core.image_forensics import detect_manipulation_ela, detect_deepfake_clip
 
-genai.configure(api_key="YOUR_GEMINI_API_KEY")
-gemini = genai.GenerativeModel("gemini-1.5-flash")
+OLLAMA_MODEL = "qwen2.5:1.5b"
 
-
-# ──────────────────────────────────────────────
-# 라우트 1: 채팅 캡처 분석 (OCR → RAG → Gemini LLM)
-# ──────────────────────────────────────────────
 async def analyze_chat_logic(
     img_buffers: List[io.BytesIO],
     scam_type: str,
 ) -> FraudResponse:
-    """
-    채팅 캡처 이미지에서 텍스트를 추출(OCR)하고,
-    RAG로 유사 판례를 검색한 뒤 Gemini로 최종 판단합니다.
-    """
-    # Step 1: OCR - 텍스트 추출
-    # main.py에서 받은 버퍼를 그대로 사용
+    # 1. 가벼운 로컬 OCR로 텍스트 추출
     extracted_texts = [extract_text_from_buffer(buf) for buf in img_buffers]
     combined_text = " ".join(extracted_texts)
 
-    # Step 2: RAG - 유사 사기 판례 검색
+    # 2. 공공 데이터 교차 검증 (RAG)
     reference_case = find_similar_case(combined_text)
 
-    # Step 3: 사기 유형별 분석 지침 생성
-    if scam_type == "romance":
-        analysis_guide = """
-        로맨스 스캠 채팅 분석 지침:
-        - 감정적 유대를 형성한 후 금전 요구로 전환되는 '피벗(Pivot)' 구간을 탐지하세요.
-        - "급하게 돈이 필요하다", "비밀 투자처가 있다", "해외 송금" 등의 패턴을 찾으세요.
-        - 참고 판례와의 유사도를 판단 근거에 포함하세요.
-        """
-    elif scam_type == "investment":
-        analysis_guide = """
-        투자 사기 채팅 분석 지침:
-        - 원금 보장, 고수익 보장, 특정 계좌로의 입금 유도 등 전형적인 금융 사기 패턴을 찾으세요.
-        - 리딩방·VIP방 초대, 특별 정보 제공 등의 미끼 멘트를 탐지하세요.
-        - 참고 판례와의 유사도를 판단 근거에 포함하세요.
-        """
-    else:
-        analysis_guide = "채팅 내용에서 사기 의심 패턴을 분석하세요."
-
+    # 3. OCR 오타 감안 및 문맥 중심 파악 지침 추가
     prompt = f"""당신은 디지털 금융 범죄 분석 전문가입니다.
+      다음 채팅 내용과 공공 사기 판례를 비교하여 사기 여부를 판단하세요.
+      
+      [채팅 내용]
+      {combined_text}
 
-[분석 대상 채팅 내용]
-{combined_text}
+      [공공기관 유사 사기 판례 (RAG 교차 검증 데이터)]
+      {reference_case if reference_case else "참고할 유사 판례 없음."}
 
-[유사 사기 판례]
-{reference_case if reference_case else "참고할 유사 판례가 없습니다."}
+      [분석 유형]: {scam_type}
 
-[분석 지침]
-{analysis_guide}
+      [중요 지침]
+      제공된 채팅 내용은 이미지에서 OCR 알고리즘으로 추출한 텍스트이므로 오타나 비문, 띄어쓰기 오류가 섞여 있을 수 있습니다. 개별 단어의 철자에 얽매이지 말고, 전체적인 문맥과 사기 수법의 흐름을 중심으로 판단하세요.
 
-위 내용을 종합하여 사기 여부를 판단하고, 결과를 JSON 형식으로 보고하세요."""
-
-    response = await gemini.generate_content_async(
-        contents=[prompt],
-        generation_config=genai.GenerationConfig(
-            response_mime_type="application/json",
-            response_schema=FraudResponse,
-        ),
+      반드시 아래 JSON 형식으로만 답변을 출력하세요. 마크다운이나 다른 텍스트는 절대 포함하지 마세요.
+      {{
+        "status": "FRAUD 또는 NORMAL 또는 SUSPICIOUS",
+        "fraudScore": 0.0에서 100.0 사이의 숫자,
+        "description": "분석 결과 요약 및 판단 근거 (유사 판례 일치 여부 포함)"
+      }}
+      """
+    # 4. AsyncClient를 사용한 비동기 논블로킹 호출
+    client = AsyncClient()
+    response = await client.chat(
+        model=OLLAMA_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        format="json", 
     )
-    return FraudResponse.model_validate_json(response.text)
+    
+    # 5. Pydantic 모델로 파싱 및 검증
+    return FraudResponse.model_validate_json(response['message']['content'])
 
 
-# ──────────────────────────────────────────────
-# 라우트 2: 이미지 시각 분석 (Gemini Vision)
-# ──────────────────────────────────────────────
 async def analyze_image_manipulation(
     img_buffers: List[io.BytesIO],
     scam_type: str,
     image_type: str,
 ) -> FraudResponse:
-    """
-    프로필 사진 또는 수익 인증샷을 Gemini Vision으로 분석합니다.
-    OCR 없이 이미지 자체를 Gemini에 전달합니다.
-    """
-    # main.py에서 받은 BytesIO 버퍼를 PIL.Image로 변환
-    pil_images: List[Image.Image] = []
+    
+    highest_fraud_response = None
+    max_score = -1.0
+
+    # 💡 피드백 반영: 여러 장의 이미지를 순회하며 가장 의심스러운(점수가 높은) 결과를 채택
     for buf in img_buffers:
-        buf.seek(0)  # BytesIO 커서를 처음으로 되감기
-        pil_images.append(Image.open(buf))
+        if scam_type == "investment" and image_type == "proof":
+            current_response = detect_manipulation_ela(buf)
+        elif scam_type == "romance" and image_type == "profile":
+            current_response = detect_deepfake_clip(buf)
+        else:
+            return FraudResponse(
+                status="NORMAL", 
+                fraudScore=0.0, 
+                description="분석을 지원하지 않는 이미지 타입입니다."
+            )
+        
+        # 최댓값 갱신 (가장 사기 확률이 높은 결과 저장)
+        if current_response.fraudScore > max_score:
+            max_score = current_response.fraudScore
+            highest_fraud_response = current_response
 
-    # 사기 유형 × 이미지 유형 조합별 분석 지침
-    if scam_type == "romance" and image_type == "profile":
-        expert_role = "딥페이크 탐지 전문가"
-        investigation_goal = """
-        이 프로필 사진이 AI로 생성(Deepfake)되었거나 도용된 사진인지 분석하세요.
-        - 눈동자 비대칭, 배경 왜곡, 피부 질감의 과도한 매끄러움 등 AI 생성물 특징을 찾으세요.
-        - 비현실적인 화보형 사진인지 판단 근거에 포함하세요.
-        """
-    elif scam_type == "investment" and image_type == "proof":
-        expert_role = "금융 범죄 수사관 및 이미지 조작 감식 전문가"
-        investigation_goal = """
-        이 수익 인증샷(그래프, 계좌 내역 등)의 조작 여부를 분석하세요.
-        - 숫자 주변의 픽셀 번짐(포토샵 흔적), 폰트 불일치, 배경 그리드 정렬 오류를 찾으세요.
-        - 표시된 수익률과 투자 금액이 수학적으로 논리적인지 검증하세요.
-        """
-    else:
-        expert_role = "이미지 분석 전문가"
-        investigation_goal = "이미지에 시각적 조작이나 모순점이 있는지 분석하세요."
+    # 만약 에러 등으로 버퍼가 비어있었다면 기본값 반환
+    if not highest_fraud_response:
+        return FraudResponse(status="NORMAL", fraudScore=0.0, description="분석할 이미지가 없습니다.")
 
-    prompt = f"""당신은 {expert_role}입니다.
-
-[수사 지침]
-{investigation_goal}
-
-위 지침에 따라 첨부된 이미지를 정밀 분석하고, 결과를 JSON 형식으로 보고하세요."""
-
-    # ✅ Gemini Vision: 텍스트 프롬프트 + PIL 이미지 목록을 함께 전송
-    response = await gemini.generate_content_async(
-        contents=[prompt, *pil_images],
-        generation_config=genai.GenerationConfig(
-            response_mime_type="application/json",
-            response_schema=FraudResponse,
-        ),
-    )
-    return FraudResponse.model_validate_json(response.text)
+    return highest_fraud_response

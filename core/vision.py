@@ -1,21 +1,17 @@
 import io
+import easyocr
 import numpy as np
-import onnxruntime as ort
 from PIL import Image
 
-ocr_session = ort.InferenceSession("lightweight_ocr_model.onnx")
+# EasyOCR 리더 (한국어, 영어 지원 / 8GB 램을 위해 gpu=False 설정 가능)
+# 모듈 로드 시 한 번만 메모리에 올립니다.
+reader = easyocr.Reader(['ko', 'en'], gpu=False) 
 
 def extract_text_from_buffer(buffer: io.BytesIO) -> str:
-  buffer.seek(0)
-  original_img = Image.open(buffer).convert("RGB")
-
-  resized_img = original_img.resize((224, 224))
-  img_array = np.array(resized_img, dtype=np.float32)
-
-  img_array /= 255.0
-  img_array = np.transpose(img_array, (2, 0 ,1))
-
-  input_tensor = np.expand_dims(img_array, axis=0)
-
-  ocr_result = ocr_session.run(None, {"input": input_tensor})
-  return str(ocr_result[0])
+    buffer.seek(0)
+    image = Image.open(buffer).convert('RGB')
+    image_np = np.array(image)
+    
+    # OCR 텍스트 추출
+    results = reader.readtext(image_np, detail=0)
+    return " ".join(results)
